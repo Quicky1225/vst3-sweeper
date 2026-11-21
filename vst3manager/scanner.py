@@ -317,6 +317,30 @@ def find_related(vendor, presets_dirs, sw_map):
     return rel
 
 
+def find_orphans(plugins, presets_dirs):
+    """«Сироты»: папки пресетов вендоров, у которых нет ни одного найденного плагина."""
+    known = {norm(e["vendor"]) for e in plugins if e["vendor"]}
+    out = []
+    for pr in presets_dirs:
+        try:
+            for child in pr.iterdir():
+                if not child.is_dir() or norm(child.name) in known:
+                    continue
+                files, size = dir_stats(child)
+                out.append({"path": str(child), "kind": "dir", "root": str(pr),
+                            "vendor": child.name, "name": child.name,
+                            "version": None, "binaries": [],
+                            "file_count": files, "size_bytes": size,
+                            "related": {"presets": [], "vendor_data": [],
+                                        "registry": []},
+                            "sidecar_dlls": [], "risk": "orphan",
+                            "warnings": ["Установленных плагинов этого вендора не найдено"],
+                            "orphan": True})
+        except OSError:
+            pass
+    return out
+
+
 def detect_daw_caches():
     """Кэши/базы плагинов DAW — только обнаружение (чистка на след. этапе)."""
     checks = {
@@ -408,6 +432,7 @@ def scan(progress_cb=None):
         e["risk"] = risk
         e["warnings"] = warns
 
+    orphans = find_orphans(plugins, presets_dirs)
     return {
         "generated": datetime.now().isoformat(timespec="seconds"),
         "is_admin": is_admin,
@@ -416,6 +441,7 @@ def scan(progress_cb=None):
         "daw_caches": detect_daw_caches(),
         "plugin_count": len(plugins),
         "total_size_bytes": sum(e["size_bytes"] for e in plugins),
+        "orphans": orphans,
         "plugins": sorted(plugins, key=lambda e: (norm(e["vendor"]) or "",
                                                   e["name"].lower())),
     }

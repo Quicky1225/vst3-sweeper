@@ -26,6 +26,7 @@ MUTED = "#6A5E56"
 UMBER = "#3B2921"
 ACCENT = "#AF4529"
 ACCENT_SOFT = "rgba(175, 69, 41, 0.10)"
+ACCENT_WASH = "#F5E8E1"  # акцент 10% поверх sheet — для чипов в HTML-карточках
 LANE_2 = "#8F433B"
 RUBBER = "#B84930"
 RUBBER_HI = "#C9583F"
@@ -104,8 +105,9 @@ QTreeWidget::item:hover {{ background: {PAPER_2}; }}
 QTreeWidget::item:selected {{ background: {ACCENT_SOFT}; color: {INK}; }}
 
 QHeaderView::section {{
-    background: {PAPER_2}; color: {MUTED};
-    border: none; padding: 6px 10px; font-weight: 600;
+    background: transparent; color: {MUTED};
+    border: none; border-bottom: 1px solid {RULE};
+    padding: 8px 10px; font-weight: 600; font-size: 9pt;
 }}
 
 /* — карточка деталей — */

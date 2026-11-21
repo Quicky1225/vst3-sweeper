@@ -138,13 +138,16 @@ def _filter_ini(file_path, substrings):
     return dropped
 
 
-def backup_and_delete(entries, paths, registry_keys, ini_files=None, progress=None):
-    """Бэкап (zip + экспорт реестра + копии ini) и удаление в корзину.
+def backup_and_delete(entries, paths, registry_keys, ini_files=None, progress=None,
+                      backup=True, permanent=False):
+    """Удаление с бэкапом (zip + экспорт реестра + копии ini) или без него.
 
     entries       — список плагинов из отчёта сканера (их бандлы удаляются всегда)
     paths         — связанные папки/файлы (пресеты, данные вендора, побочные DLL, кэши DAW)
     registry_keys — ключи реестра («HKCU\\Software\\…»)
     ini_files     — ini-кэши DAW: копия попадает в архив, затем записи плагина чистятся
+    backup        — False: без ZIP-архива (экспорт реестра и ini всё равно сохраняются)
+    permanent     — True: удалить навсегда, мимо корзины
     """
     ini_files = [f for f in (ini_files or []) if Path(f).is_file()]
     if send2trash is None:
@@ -183,48 +186,68 @@ def backup_and_delete(entries, paths, registry_keys, ini_files=None, progress=No
 
     deleted_ok, reg_deleted, errors, reg_exported = [], [], [], []
 
-    report(f"Бэкап: {zip_path.name}")
-    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as z:
-        manifest = {"id": op_id, "timestamp": ts, "entries": entries,
-                    "registry_keys": list(registry_keys), "items": items,
-                    "modified_files": [{"path": f,
-                                        "arc": f"daw_ini_{i}_{Path(f).name}"}
-                                       for i, f in enumerate(ini_files)]}
-        z.writestr("manifest.json",
-                   json.dumps(manifest, ensure_ascii=False, indent=2))
-        for it in items:
-            src = Path(it["path"])
-            if not src.exists():
-                continue
-            if it["type"] == "dir":
-                base = src.parent
-                for dp, _dn, fn in os.walk(src):
-                    for f in fn:
-                        fp = Path(dp) / f
-                        z.write(fp, f"{it['arc']}/{fp.relative_to(base)}")
-                report(f"Бэкап: {src.name}")
-            else:
-                z.write(src, f"{it['arc']}/{src.name}")
+    if not backup:
+        # без ZIP: сохраняем только мелкие страховки — экспорт реестра и копии ini
+        reg_dir = APP_DIR / "reg_backups" / op_id
+        reg_dir.mkdir(parents=True, exist_ok=True)
         for i, key in enumerate(registry_keys):
-            tmp = Path(tempfile.gettempdir()) / f"vst3m_{op_id}_{i}.reg"
-            if export_registry(key, tmp):
-                z.write(tmp, f"reg_{i}.reg")
+            if export_registry(key, reg_dir / f"reg_{i}.reg"):
                 reg_exported.append(key)
-                report(f"Бэкап реестра: {key}")
+                report(f"Экспорт реестра: {key}")
             else:
                 errors.append(f"реестр: не удалось экспортировать {key} — ключ не удалён")
-            tmp.unlink(missing_ok=True)
-        for i, ini in enumerate(ini_files):
-            z.write(ini, f"daw_ini_{i}_{Path(ini).name}")
-            report(f"Бэкап кэша DAW: {Path(ini).name}")
+        for ini in ini_files:
+            shutil.copy2(ini, reg_dir / Path(ini).name)
+    else:
+        report(f"Бэкап: {zip_path.name}")
+        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as z:
+            manifest = {"id": op_id, "timestamp": ts, "entries": entries,
+                        "registry_keys": list(registry_keys), "items": items,
+                        "modified_files": [{"path": f,
+                                            "arc": f"daw_ini_{i}_{Path(f).name}"}
+                                           for i, f in enumerate(ini_files)]}
+            z.writestr("manifest.json",
+                       json.dumps(manifest, ensure_ascii=False, indent=2))
+            for it in items:
+                src = Path(it["path"])
+                if not src.exists():
+                    continue
+                if it["type"] == "dir":
+                    base = src.parent
+                    for dp, _dn, fn in os.walk(src):
+                        for f in fn:
+                            fp = Path(dp) / f
+                            z.write(fp, f"{it['arc']}/{fp.relative_to(base)}")
+                    report(f"Бэкап: {src.name}")
+                else:
+                    z.write(src, f"{it['arc']}/{src.name}")
+            for i, key in enumerate(registry_keys):
+                tmp = Path(tempfile.gettempdir()) / f"vst3m_{op_id}_{i}.reg"
+                if export_registry(key, tmp):
+                    z.write(tmp, f"reg_{i}.reg")
+                    reg_exported.append(key)
+                    report(f"Бэкап реестра: {key}")
+                else:
+                    errors.append(f"реестр: не удалось экспортировать {key} — ключ не удалён")
+                tmp.unlink(missing_ok=True)
+            for i, ini in enumerate(ini_files):
+                z.write(ini, f"daw_ini_{i}_{Path(ini).name}")
+                report(f"Бэкап кэша DAW: {Path(ini).name}")
 
     for it in items:
         src = Path(it["path"])
         if not src.exists():
             continue
-        report(f"Удаление в корзину: {src.name}")
+        report(f"Удаление навсегда: {src.name}" if permanent
+               else f"Удаление в корзину: {src.name}")
         try:
-            send2trash(str(src))
+            if permanent:
+                if it["type"] == "dir":
+                    shutil.rmtree(src)
+                else:
+                    src.unlink()
+            else:
+                send2trash(str(src))
             deleted_ok.append(str(src))
         except Exception as e:
             errors.append(f"{src}: {e}")
@@ -248,7 +271,9 @@ def backup_and_delete(entries, paths, registry_keys, ini_files=None, progress=No
           "plugin": f"{entries[0].get('vendor') or ''} — {entries[0].get('name')}".strip(" —")
                     if len(entries) == 1 else f"{len(entries)} плагинов",
           "vendor": entries[0].get("vendor"),
-          "backup_zip": str(zip_path),
+          "backup_zip": str(zip_path) if backup else None,
+          "no_backup": not backup,
+          "permanent": permanent,
           "deleted_paths": deleted_ok,
           "registry_deleted": reg_deleted,
           "errors": errors,

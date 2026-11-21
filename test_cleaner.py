@@ -103,6 +103,20 @@ with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key) as k:
     v, _ = winreg.QueryValueEx(k, "TestValue")
 assert v == "hello", v
 
+# --- режим без бэкапа + навсегда ---
+bundle2 = tmp / "Common" / "VST3" / "OnceOnly.vst3"
+(bundle2 / "Contents").mkdir(parents=True)
+(bundle2 / "Contents" / "x.vst3").write_bytes(b"MZ")
+entry2 = {"path": str(bundle2), "kind": "dir", "vendor": "OnceOnly",
+          "name": "OnceOnly", "size_bytes": 1, "file_count": 1,
+          "related": {"presets": [], "vendor_data": [], "registry": []}}
+op2 = cleaner.backup_and_delete([entry2], [], [], progress=print,
+                                backup=False, permanent=True)
+assert op2["status"] == "deleted", op2
+assert op2["backup_zip"] is None and op2["no_backup"] and op2["permanent"]
+assert not bundle2.exists(), "папка не удалена навсегда"
+print("no-backup + permanent OK")
+
 # --- уборка ---
 winreg.DeleteKey(winreg.HKEY_CURRENT_USER, key)
 shutil.rmtree(tmp, ignore_errors=True)

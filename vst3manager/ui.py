@@ -1,17 +1,20 @@
 # -*- coding: utf-8 -*-
 """GUI VST3 Manager (PySide6): дерево плагинов, карточки, удаление с бэкапом."""
 import html
+import json
 import os
+import subprocess
 import sys
 from pathlib import Path
+from urllib.parse import quote, unquote
 
 from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtGui import QBrush, QColor, QPainter, QRadialGradient
 from PySide6.QtWidgets import (
-    QApplication, QCheckBox, QDialog, QDialogButtonBox, QHBoxLayout, QHeaderView,
-    QLabel, QLineEdit, QMainWindow, QMessageBox, QProgressDialog, QPushButton,
-    QSplitter, QTableWidget, QTableWidgetItem, QTextBrowser, QTreeWidget,
-    QTreeWidgetItem, QVBoxLayout, QWidget,
+    QApplication, QCheckBox, QDialog, QDialogButtonBox, QFileDialog, QHBoxLayout,
+    QHeaderView, QLabel, QLineEdit, QMainWindow, QMessageBox, QProgressDialog,
+    QPushButton, QSplitter, QTableWidget, QTableWidgetItem, QTextBrowser,
+    QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
 import cleaner
@@ -19,7 +22,20 @@ import daw
 import scanner
 import theme
 
-RISK_LABEL = {"clean": "", "has-related": "есть хвосты", "shared-data": "⚠ общие данные"}
+RISK_LABEL = {"clean": "", "has-related": "есть хвосты",
+              "shared-data": "⚠ общие данные", "orphan": "сирота"}
+
+
+def open_in_explorer(path):
+    """Открыть папку в проводнике (или подсветить файл в его папке)."""
+    try:
+        p = Path(path)
+        if p.is_dir():
+            os.startfile(str(p))
+        elif p.is_file():
+            subprocess.Popen(["explorer", "/select,", str(p)])
+    except Exception:
+        pass
 
 
 def fmt_size(n):
@@ -98,9 +114,8 @@ class DeleteDialog(QDialog):
         v = QVBoxLayout(self)
         total = sum(e["size_bytes"] for e in entries)
 
-        head = QLabel(f"Бандлов к удалению: {len(entries)} "
-                      f"({fmt_size(total)}).\nБандлы .vst3 удаляются всегда — "
-                      f"предварительно всё попадёт в ZIP-бэкап.")
+        head = QLabel(f"Бандлов к удалению: {len(entries)} ({fmt_size(total)}).\n"
+                      f"Бандлы .vst3 удаляются всегда, связанные файлы — по галочкам.")
         head.setWordWrap(True)
         v.addWidget(head)
 
@@ -203,6 +218,13 @@ class DeleteDialog(QDialog):
         v.addWidget(reg_note)
         v.addStretch(1)
 
+        self.backup_chk = QCheckBox("Создать ZIP-бэкап перед удалением (рекомендуется)")
+        self.backup_chk.setChecked(True)
+        v.addWidget(self.backup_chk)
+        self.perm_chk = QCheckBox("Удалить навсегда, мимо корзины (безвозвратно!)")
+        self.perm_chk.setStyleSheet(f"color: {theme.LANE_2};")
+        v.addWidget(self.perm_chk)
+
         bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         bb.button(QDialogButtonBox.Ok).setText("Удалить (с бэкапом)")
         bb.accepted.connect(self.accept)
@@ -214,7 +236,8 @@ class DeleteDialog(QDialog):
                  if kind in ("presets", "data", "sidecar", "daw") and cb.isChecked()]
         keys = [p for kind, p, cb in self.checks if kind == "key" and cb.isChecked()]
         inis = [p for kind, p, cb in self.checks if kind == "dawini" and cb.isChecked()]
-        return paths, keys, inis
+        return (paths, keys, inis,
+                self.backup_chk.isChecked(), self.perm_chk.isChecked())
 
 
 # --------------------------- диалог восстановления ---------------------------
@@ -261,6 +284,12 @@ class RestoreDialog(QDialog):
         if row < 0 or row >= len(self.ops):
             return
         op = self.ops[row]
+        if not op.get("backup_zip") or not Path(op.get("backup_zip")).exists():
+            QMessageBox.warning(
+                self, "Нет бэкапа",
+                "Эта операция выполнялась без ZIP-бэкапа — восстановить из "
+                "журнала нельзя.\nФайлы могли остаться в корзине Windows.")
+            return
         if not QMessageBox.question(
                 self, "Восстановление",
                 f"Восстановить «{op.get('plugin')}» из бэкапа?\n"
@@ -302,13 +331,15 @@ class MainWindow(QMainWindow):
         self.btn_scan = QPushButton("Пересканировать")
         self.btn_delete = QPushButton("Удалить выбранное")
         self.btn_restore = QPushButton("Журнал / Восстановить…")
+        self.btn_export = QPushButton("Сохранить отчёт")
         self.btn_admin = QPushButton("Перезапуск от админа")
         self.btn_restore.setProperty("variant", "secondary")
+        self.btn_export.setProperty("variant", "secondary")
         self.btn_admin.setProperty("variant", "secondary")
         self.search = QLineEdit()
         self.search.setPlaceholderText("Поиск по имени или вендору…")
         for w in (self.btn_scan, self.btn_delete, self.btn_restore,
-                  self.btn_admin, self.search):
+                  self.btn_export, self.btn_admin, self.search):
             top.addWidget(w)
         root.addLayout(top)
 
@@ -321,6 +352,8 @@ class MainWindow(QMainWindow):
         self.tree.setHeaderLabels(["Плагин / вендор", "Размер", "Статус"])
         self.tree.header().setSectionResizeMode(0, QHeaderView.Stretch)
         self.details = QTextBrowser()
+        self.details.setOpenLinks(False)
+        self.details.anchorClicked.connect(self.on_anchor)
         split.addWidget(self.tree)
         split.addWidget(self.details)
         split.setSizes([650, 500])
@@ -329,8 +362,10 @@ class MainWindow(QMainWindow):
         self.btn_scan.clicked.connect(self.start_scan)
         self.btn_delete.clicked.connect(self.on_delete)
         self.btn_restore.clicked.connect(self.on_restore)
+        self.btn_export.clicked.connect(self.on_export)
         self.btn_admin.clicked.connect(self.on_relaunch_admin)
         self.tree.itemSelectionChanged.connect(self.on_select)
+        self.tree.itemDoubleClicked.connect(self.on_double_click)
         self.search.textChanged.connect(lambda _t: self.populate())
 
         self.update_admin_label()
@@ -352,6 +387,27 @@ class MainWindow(QMainWindow):
     def on_relaunch_admin(self):
         if relaunch_as_admin():
             self.close()
+
+    def on_anchor(self, url):
+        target = unquote(url.toString())
+        if target.startswith("explorer:"):
+            open_in_explorer(target[len("explorer:"):])
+
+    def on_double_click(self, item, _col=0):
+        data = item.data(0, Qt.UserRole)
+        if data and data["kind"] == "plugin":
+            open_in_explorer(data["entry"]["path"])
+
+    def on_export(self):
+        if not self.report:
+            return
+        path, _ = QFileDialog.getSaveFileName(self, "Сохранить отчёт",
+                                              "vst3_report.json", "JSON (*.json)")
+        if path:
+            Path(path).write_text(
+                json.dumps(self.report, ensure_ascii=False, indent=2),
+                encoding="utf-8")
+            self.statusBar().showMessage(f"Отчёт сохранён: {path}")
 
     # ----- сканирование -----
 
@@ -391,6 +447,9 @@ class MainWindow(QMainWindow):
         groups = {}
         for e in self.report["plugins"]:
             groups.setdefault(e["vendor"] or "(без вендора)", []).append(e)
+        orphans = self.report.get("orphans") or []
+        if orphans:
+            groups["(сироты — плагины уже удалены)"] = orphans
         for vendor in sorted(groups, key=str.lower):
             items = sorted(groups[vendor], key=lambda x: x["name"].lower())
             if flt and flt not in vendor.lower() \
@@ -399,13 +458,23 @@ class MainWindow(QMainWindow):
             vnode = QTreeWidgetItem([vendor,
                                      fmt_size(sum(e["size_bytes"] for e in items)),
                                      f"{len(items)} шт."])
+            vnode.setTextAlignment(1, int(Qt.AlignRight | Qt.AlignVCenter))
             f = vnode.font(0)
             f.setBold(True)
             vnode.setFont(0, f)
             vnode.setData(0, Qt.UserRole, {"kind": "vendor", "plugins": items})
             for e in items:
-                child = QTreeWidgetItem([e["name"], fmt_size(e["size_bytes"]),
-                                         RISK_LABEL.get(e["risk"], "")])
+                label = RISK_LABEL.get(e["risk"], "")
+                child = QTreeWidgetItem([e["name"], fmt_size(e["size_bytes"]), label])
+                child.setTextAlignment(1, int(Qt.AlignRight | Qt.AlignVCenter))
+                if label:
+                    if e["risk"] == "shared-data":
+                        color = theme.LANE_2
+                    elif e["risk"] == "orphan":
+                        color = theme.MUTED
+                    else:
+                        color = theme.ACCENT
+                    child.setForeground(2, QBrush(QColor(color)))
                 child.setData(0, Qt.UserRole, {"kind": "plugin", "entry": e})
                 vnode.addChild(child)
             self.tree.addTopLevelItem(vnode)
@@ -435,16 +504,24 @@ class MainWindow(QMainWindow):
                 return empty
             return "<br>".join("• " + esc(p) for p in paths)
 
-        risk_txt = {"clean": "только бандл — удаление безопасное",
-                    "has-related": "есть связанные файлы",
-                    "shared-data": "общие данные вендора — осторожно"}.get(e["risk"], "")
-        h = [f"<h2 style='color:{theme.INK}'>{esc(e['name'])}</h2>",
-             f"<p><b>Вендор:</b> {esc(e['vendor'] or '—')} &nbsp;&nbsp; "
-             f"<b>Версия:</b> {esc(e.get('version') or '—')}</p>",
+        chips = {"clean": (theme.PAPER_3, theme.UMBER, "только бандл"),
+                 "has-related": (theme.ACCENT_WASH, theme.ACCENT, "есть хвосты"),
+                 "shared-data": (theme.ACCENT_WASH, theme.LANE_2,
+                                 "общие данные вендора"),
+                 "orphan": (theme.PAPER_3, theme.MUTED, "сирота")}
+        bg, fg, txt = chips.get(e["risk"], (theme.PAPER_3, theme.UMBER, ""))
+        ver = e.get("version") or ""
+        h = [f"<h2 style='color:{theme.INK}; margin-bottom:2px;'>{esc(e['name'])}</h2>",
+             f"<p style='margin-top:2px;'>"
+             f"<span style='background-color:{bg}; color:{fg};'>&nbsp;{txt}&nbsp;</span>"
+             + (f" &nbsp;<span style='color:{theme.MUTED}'>v{esc(ver)}</span>"
+                if ver else "") + "</p>",
+             f"<p><b>Вендор:</b> {esc(e['vendor'] or '—')}</p>",
              f"<p><b>Путь:</b> {esc(e['path'])}</p>",
              f"<p><b>Размер:</b> {fmt_size(e['size_bytes'])} "
              f"({e['file_count']} файлов)</p>",
-             f"<p><b>Статус:</b> {risk_txt}</p>"]
+             f"<p><a href='explorer:{quote(e['path'])}' "
+             f"style='color:{theme.ACCENT};'>Открыть папку в проводнике ↗</a></p>"]
         for wmsg in e.get("warnings", []):
             h.append(f"<p style='color:{theme.LANE_2}'><b>⚠</b> {esc(wmsg)}</p>")
         h += [f"<h4 style='color:{theme.MUTED}'>Связанные файлы (хвосты)</h4>",
@@ -483,10 +560,19 @@ class MainWindow(QMainWindow):
         dlg = DeleteDialog(entries, self.report, daw_info, self)
         if not dlg.exec():
             return
-        paths, keys, daw_inis = dlg.selections()
-        self._execute_deletion(entries, paths, keys, daw_inis)
+        paths, keys, daw_inis, do_backup, permanent = dlg.selections()
+        if permanent:
+            r = QMessageBox.warning(
+                self, "Безвозвратное удаление",
+                f"Удалить НАВСЕГДА, мимо корзины?\n\nПлагинов: {len(entries)}.\n"
+                f"Восстановление будет НЕВОЗМОЖНО.",
+                QMessageBox.Yes | QMessageBox.No)
+            if r != QMessageBox.Yes:
+                return
+        self._execute_deletion(entries, paths, keys, daw_inis, do_backup, permanent)
 
-    def _execute_deletion(self, entries, paths, keys, daw_inis=None):
+    def _execute_deletion(self, entries, paths, keys, daw_inis=None,
+                          do_backup=True, permanent=False):
         # проверка прав для Program Files
         pf = os.environ.get("ProgramFiles", r"C:\Program Files").lower()
         pf86 = os.environ.get("ProgramFiles(x86)", "").lower()
@@ -520,7 +606,8 @@ class MainWindow(QMainWindow):
 
         try:
             op = cleaner.backup_and_delete(entries, paths, keys,
-                                           ini_files=daw_inis, progress=progress)
+                                           ini_files=daw_inis, progress=progress,
+                                           backup=do_backup, permanent=permanent)
         except Exception as e:
             prog.close()
             QMessageBox.critical(self, "Ошибка", str(e))
@@ -533,12 +620,34 @@ class MainWindow(QMainWindow):
                                 + "\n\nСовет: перезапусти от имени администратора "
                                   "и повтори — журнал и бэкап уже созданы.")
         else:
-            QMessageBox.information(
-                self, "Готово",
-                f"Удалено объектов: {len(op['deleted_paths'])}\n"
-                f"Ключей реестра: {len(op['registry_deleted'])}\n"
-                f"Бэкап: {op['backup_zip']}")
-        self.start_scan()
+            msg = (f"Удалено объектов: {len(op['deleted_paths'])}\n"
+                   f"Ключей реестра: {len(op['registry_deleted'])}\n")
+            if op.get("backup_zip"):
+                msg += f"Бэкап: {op['backup_zip']}"
+            elif permanent:
+                msg += "Режим: навсегда, мимо корзины"
+            else:
+                msg += "Без ZIP-бэкапа (файлы можно найти в корзине Windows)"
+            QMessageBox.information(self, "Готово", msg)
+        # убираем удалённое из списка мгновенно, без полного пересканирования
+        deleted = set(op["deleted_paths"])
+        if deleted:
+            self.report["plugins"] = [e for e in self.report["plugins"]
+                                      if e["path"] not in deleted]
+            self.report["orphans"] = [o for o in self.report.get("orphans", [])
+                                      if o["path"] not in deleted]
+            self.report["plugin_count"] = len(self.report["plugins"])
+            self.report["total_size_bytes"] = sum(
+                e["size_bytes"] for e in self.report["plugins"])
+            self.populate()
+            self.details.setHtml(
+                f"<p style='color:{theme.MUTED}'>Выбери плагин слева — "
+                f"здесь появится карточка со всеми связями и «хвостами».</p>")
+            self.btn_delete.setEnabled(False)
+            self.statusBar().showMessage(
+                f"Плагинов: {self.report['plugin_count']} | Размер: "
+                f"{fmt_size(self.report['total_size_bytes'])} | "
+                f"удалено: {len(deleted)} объектов")
 
     def on_restore(self):
         RestoreDialog(self, changed_cb=self.start_scan).exec()
