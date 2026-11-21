@@ -1,0 +1,6 @@
+PySide6>=6.6
+send2trash>=1.8
+pefile>=2023.2.7
+
+# для сборки в .exe:
+# pyinstaller>=6
