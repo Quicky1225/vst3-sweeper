@@ -5,8 +5,12 @@ import json
 import os
 import re
 import sys
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
+
+import shellscan
 
 HOME = Path.home()
 APPDATA = os.environ.get("APPDATA", "")
@@ -68,11 +72,11 @@ def find_bundles(root):
         d = Path(dirpath)
         for name in dirnames:
             if name.lower().endswith(".vst3"):
-                found.append({"path": d / name, "kind": "dir",
+                found.append({"path": d / name, "kind": "dir", "root": str(root),
                               "vendor_hint": d.name if d != root else None})
         for name in filenames:
             if name.lower().endswith(".vst3"):
-                found.append({"path": d / name, "kind": "file",
+                found.append({"path": d / name, "kind": "file", "root": str(root),
                               "vendor_hint": d.name if d != root else None})
         # внутрь бандла не спускаемся — там бинарник, а не другие плагины
         dirnames[:] = [x for x in dirnames if not x.lower().endswith(".vst3")]
@@ -164,7 +168,7 @@ _SKIP_DLL_PREFIX = ("api-ms-", "ext-ms-", "nt-ms-")
 _DLL_STRING = re.compile(r"[A-Za-z0-9_\- .]{2,60}\.dll", re.IGNORECASE)
 
 
-def _string_dll_candidates(dll_path, max_read=16 << 20):
+def _string_dll_candidates(dll_path, max_read=8 << 20):
     """Имена *.dll из строк бинарника — ловит зависимости, подгружаемые
     через LoadLibrary (их нет в статической таблице импортов)."""
     try:
@@ -355,8 +359,82 @@ def detect_daw_caches():
     return {daw: str(p) for daw, p in checks.items() if p and p.exists()}
 
 
+_CACHE_KEYS = ("path", "kind", "root", "vendor_hint", "name", "version",
+               "vendor", "binaries", "file_count", "size_bytes", "sidecar_dlls")
+
+
+def _bundle_sig(path, kind):
+    """Подпись бандла для кэша: mtimes бандла и Contents (дёшево)."""
+    try:
+        st = path.stat()
+        sig = str(st.st_mtime_ns)
+        if kind == "dir":
+            cdir = path / "Contents"
+            if cdir.is_dir():
+                sig += f"/{cdir.stat().st_mtime_ns}"
+        return sig
+    except OSError:
+        return "0"
+
+
+def _scan_bundle(b, cache, cache_changed):
+    """Разбор одного бандла (в рабочем потоке). С кэшем — мгновенно."""
+    p = b["path"]
+    entry = {"path": str(p), "kind": b["kind"], "root": str(b["root"]),
+             "vendor_hint": b["vendor_hint"]}
+    sig = _bundle_sig(p, b["kind"])
+    cached = cache.get(str(p))
+    if cached and cached.get("sig") == sig and cached.get("kind") == b["kind"]:
+        for k in _CACHE_KEYS:
+            entry[k] = cached.get(k)
+        if "shell_plugins" in cached:
+            entry["shell_plugins"] = cached["shell_plugins"]
+        return entry
+    try:
+        if b["kind"] == "dir":
+            mi = read_moduleinfo(p)
+            files, size = dir_stats(p)
+            binaries = [str(x) for x in p.rglob("*.vst3") if x.is_file()]
+        else:
+            mi = None
+            files, size = 1, p.stat().st_size
+            binaries = [str(p)]
+        name, version, mi_vendor = parse_moduleinfo(mi)
+        vendor = mi_vendor or b["vendor_hint"]
+        # если moduleinfo нет/неполный — добираем из ресурсов PE
+        if (not vendor or not name) and binaries:
+            strings = pe_strings(binaries[0])
+            if not vendor:
+                vendor = strings.get("CompanyName") or b["vendor_hint"]
+            if not name:
+                name = (strings.get("FileDescription")
+                        or strings.get("ProductName") or p.stem)
+        entry["name"] = name or p.stem
+        entry["version"] = version
+        entry["vendor"] = vendor
+        entry["binaries"] = binaries
+        entry["sidecar_dlls"] = find_sidecar_dlls(entry)
+        entry["file_count"] = files
+        entry["size_bytes"] = size
+        # оболочки: перечисляем плагины внутри через VST3-фабрику (подпроцесс)
+        if binaries and "shell" in entry["name"].lower():
+            sp = shellscan.scan_shell(binaries[0])
+            if sp:
+                entry["shell_plugins"] = sp
+        entry["sig"] = sig
+        cache[str(p)] = {k: entry.get(k) for k in _CACHE_KEYS}
+        cache[str(p)]["sig"] = sig
+        if "shell_plugins" in entry:
+            cache[str(p)]["shell_plugins"] = entry["shell_plugins"]
+        cache_changed[0] = True
+        return entry
+    except Exception:
+        return None  # кривой бандл — пропускаем
+
+
 def scan(progress_cb=None):
     """Полное сканирование. Возвращает отчёт (dict)."""
+    t0 = time.perf_counter()
 
     def report(msg):
         if progress_cb:
@@ -375,44 +453,55 @@ def scan(progress_cb=None):
     roots = vst3_roots()
     report("Ищу бандлы .vst3…")
 
-    plugins = []
-    for root in roots:
-        report(f"Сканирую: {root}")
-        for b in find_bundles(root):
-            p = b["path"]
-            try:
-                entry = {"path": str(p), "kind": b["kind"], "root": str(root),
-                         "vendor_hint": b["vendor_hint"]}
-                if b["kind"] == "dir":
-                    mi = read_moduleinfo(p)
-                    files, size = dir_stats(p)
-                    binaries = [str(x) for x in p.rglob("*.vst3") if x.is_file()]
-                else:
-                    mi = None
-                    files, size = 1, p.stat().st_size
-                    binaries = [str(p)]
+    # кэш между сканами: неизменённые бандлы не пересчитываем заново
+    cache_path = (Path(os.environ.get("APPDATA", str(HOME))) / "VST3Manager"
+                  / "scan_cache.json")
+    try:
+        raw = json.loads(cache_path.read_text(encoding="utf-8"))
+        cache = raw.get("entries") if isinstance(raw, dict) \
+            and raw.get("version") == 3 else {}
+    except Exception:
+        cache = {}
+    cache_changed = [False]
 
-                name, version, mi_vendor = parse_moduleinfo(mi)
-                vendor = mi_vendor or b["vendor_hint"]
-                # если moduleinfo нет/неполный — добираем из ресурсов PE
-                if (not vendor or not name) and binaries:
-                    strings = pe_strings(binaries[0])
-                    if not vendor:
-                        vendor = strings.get("CompanyName") or b["vendor_hint"]
-                    if not name:
-                        name = (strings.get("FileDescription")
-                                or strings.get("ProductName") or p.stem)
-                entry["name"] = name or p.stem
-                entry["version"] = version
-                entry["vendor"] = vendor
-                entry["binaries"] = binaries
-                entry["sidecar_dlls"] = find_sidecar_dlls(entry)
-                entry["file_count"] = files
-                entry["size_bytes"] = size
-                entry["related"] = find_related(vendor, presets_dirs, sw_map)
-                plugins.append(entry)
-            except Exception as exc:  # один кривой бандл не должен ломать скан
-                report(f"Пропуск {p.name}: {exc}")
+    all_bundles = []
+    for root in roots:
+        all_bundles.extend(find_bundles(root))
+
+    plugins = []
+    workers = max(4, min(16, (os.cpu_count() or 4) * 2))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = [pool.submit(_scan_bundle, b, cache, cache_changed)
+                   for b in all_bundles]
+        done, total = 0, len(futures)
+        for fut in as_completed(futures):
+            done += 1
+            if done % 20 == 0 or done == total:
+                report(f"Обработано {done}/{total} бандлов…")
+            try:
+                res = fut.result()
+                if res:
+                    plugins.append(res)
+            except Exception as exc:
+                report(f"Пропуск бандла: {exc}")
+
+    # хвосты считаем всегда — они дёшевы и зависят от состояния системы
+    for e in plugins:
+        e["related"] = find_related(e["vendor"], presets_dirs, sw_map)
+
+    # сохраняем кэш, выкидывая исчезнувшие пути
+    if cache_changed[0]:
+        live = {e["path"] for e in plugins}
+        for k in list(cache.keys()):
+            if k not in live:
+                cache.pop(k, None)
+        try:
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            cache_path.write_text(
+                json.dumps({"version": 3, "entries": cache}, ensure_ascii=False),
+                encoding="utf-8")
+        except OSError:
+            pass
 
     # сколько плагинов в скане у одного вендора -> пометка «общие данные»
     vendor_counts = {}
@@ -442,6 +531,7 @@ def scan(progress_cb=None):
         "plugin_count": len(plugins),
         "total_size_bytes": sum(e["size_bytes"] for e in plugins),
         "orphans": orphans,
+        "scan_seconds": round(time.perf_counter() - t0, 1),
         "plugins": sorted(plugins, key=lambda e: (norm(e["vendor"]) or "",
                                                   e["name"].lower())),
     }

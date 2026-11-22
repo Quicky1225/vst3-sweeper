@@ -211,6 +211,13 @@ class DeleteDialog(QDialog):
             warn.setWordWrap(True)
             warn.setStyleSheet(f"color: {theme.LANE_2};")
             v.addWidget(warn)
+        shell_count = sum(len(e.get("shell_plugins") or []) for e in entries)
+        if shell_count:
+            sw = QLabel(f"⚠ Внутри оболочек {shell_count} плагинов — "
+                        f"удаление оболочки уберёт их ВСЕ сразу.")
+            sw.setWordWrap(True)
+            sw.setStyleSheet(f"color: {theme.LANE_2};")
+            v.addWidget(sw)
         reg_note = QLabel("Ключи реестра по умолчанию не трогаем — в них могут быть "
                           "лицензии. Отметь вручную, если уверен.")
         reg_note.setWordWrap(True)
@@ -437,7 +444,8 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(
             f"Плагинов: {rep['plugin_count']} | Размер: "
             f"{fmt_size(rep.get('total_size_bytes', 0))} | "
-            f"Кэши DAW: {daws} | Скан от {rep.get('generated', '')}")
+            f"Кэши DAW: {daws} | Скан занял {rep.get('scan_seconds', '?')} с | "
+            f"Скан от {rep.get('generated', '')}")
 
     def populate(self):
         self.tree.clear()
@@ -476,6 +484,12 @@ class MainWindow(QMainWindow):
                         color = theme.ACCENT
                     child.setForeground(2, QBrush(QColor(color)))
                 child.setData(0, Qt.UserRole, {"kind": "plugin", "entry": e})
+                # содержимое оболочек: информационные строки внутри
+                for sp in e.get("shell_plugins") or []:
+                    g = QTreeWidgetItem([sp["name"], "", "внутри оболочки"])
+                    g.setForeground(2, QBrush(QColor(theme.MUTED)))
+                    g.setData(0, Qt.UserRole, {"kind": "inner"})
+                    child.addChild(g)
                 vnode.addChild(child)
             self.tree.addTopLevelItem(vnode)
         self.tree.expandAll()
@@ -487,7 +501,7 @@ class MainWindow(QMainWindow):
         if not item:
             return
         data = item.data(0, Qt.UserRole)
-        if not data:
+        if not data or data.get("kind") == "inner":
             return
         self.btn_delete.setEnabled(True)
         if data["kind"] == "plugin":
@@ -530,6 +544,14 @@ class MainWindow(QMainWindow):
               f"<p><b>Реестр:</b><br>{block(rel['registry'])}</p>"]
         side = e.get("sidecar_dlls") or []
         h.append(f"<p><b>Побочные DLL (вне бандла):</b><br>{block(side)}</p>")
+        sp = e.get("shell_plugins") or []
+        if sp:
+            names = "<br>".join("• " + esc(x["name"]) for x in sp[:40])
+            more = (f"<br><b>… и ещё {len(sp) - 40}</b>" if len(sp) > 40 else "")
+            h.append(f"<p><b>Модуль-оболочка: внутри {len(sp)} плагинов:</b>"
+                     f"<br>{names}{more}</p>")
+            h.append(f"<p style='color:{theme.LANE_2}'><b>⚠</b> Удаление "
+                     f"оболочки уберёт ВСЕ эти плагины сразу.</p>")
         return "".join(h)
 
     def vendor_card(self, items):

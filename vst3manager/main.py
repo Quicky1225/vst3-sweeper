@@ -4,6 +4,7 @@
 Запуск GUI:        python vst3manager/main.py
 Самопроверка:      python vst3manager/main.py --selftest
 """
+import json
 import os
 import sys
 from pathlib import Path
@@ -103,6 +104,18 @@ def main():
 
 
 if __name__ == "__main__":
+    if "--dump-classes" in sys.argv:
+        # изолированное перечисление классов оболочки (вызывается из scanner)
+        import shellscan
+        i = sys.argv.index("--dump-classes")
+        dll = sys.argv[i + 1]
+        if len(sys.argv) > i + 2:  # результат в файл: у windowed-exe нет stdout
+            start = int(sys.argv[i + 3]) if len(sys.argv) > i + 3 else 0
+            shellscan.enumerate_classes_incremental(dll, sys.argv[i + 2],
+                                                    start=start)
+        else:
+            print(json.dumps(shellscan.enumerate_classes(dll)))
+        os._exit(0)
     if "--selftest" in sys.argv:
         sys.exit(selftest())
     if "--shot" in sys.argv:
