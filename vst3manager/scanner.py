@@ -51,6 +51,15 @@ def vst3_roots():
     except ImportError:
         pass
 
+    # кастомные папки пользователя (settings.json)
+    try:
+        import settings as app_settings
+        for cr in app_settings.custom_roots():
+            if cr:
+                roots.append(Path(cr))
+    except Exception:
+        pass
+
     out, seen = [], set()
     for r in roots:
         if r is None:

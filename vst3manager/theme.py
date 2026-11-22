@@ -104,6 +104,29 @@ QTreeWidget::item {{
 QTreeWidget::item:hover {{ background: {PAPER_2}; }}
 QTreeWidget::item:selected {{ background: {ACCENT_SOFT}; color: {INK}; }}
 
+/* — список кастомных папок — */
+QListWidget {{
+    background: {SHEET}; border: 1px solid {RULE};
+    border-radius: 14px; padding: 4px; outline: none;
+}}
+QListWidget::item {{ padding: 6px 8px; border-radius: 9px; color: {UMBER}; }}
+QListWidget::item:selected {{ background: {ACCENT_SOFT}; color: {INK}; }}
+
+/* — чекбоксы в дереве/списке — */
+QTreeWidget::indicator, QListWidget::indicator {{
+    width: 15px; height: 15px; border-radius: 4px;
+    border: 1px solid {RULE}; background: {SHEET};
+}}
+QTreeWidget::indicator:hover, QListWidget::indicator:hover {{
+    border-color: {ACCENT};
+}}
+QTreeWidget::indicator:checked, QListWidget::indicator:checked {{
+    background: {ACCENT}; border-color: {ACCENT};
+}}
+QTreeWidget::indicator:indeterminate {{
+    background: {ACCENT_WASH}; border-color: {ACCENT};
+}}
+
 QHeaderView::section {{
     background: transparent; color: {MUTED};
     border: none; border-bottom: 1px solid {RULE};

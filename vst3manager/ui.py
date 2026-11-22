@@ -8,13 +8,18 @@ import sys
 from pathlib import Path
 from urllib.parse import quote, unquote
 
-from PySide6.QtCore import Qt, QThread, Signal
-from PySide6.QtGui import QBrush, QColor, QPainter, QRadialGradient
+import settings
+
+from PySide6.QtCore import Qt, QPointF, QRectF, QThread, Signal
+from PySide6.QtGui import (
+    QBrush, QColor, QFont, QIcon, QImageWriter, QPainter, QPixmap,
+    QRadialGradient,
+)
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QDialog, QDialogButtonBox, QFileDialog, QHBoxLayout,
-    QHeaderView, QLabel, QLineEdit, QMainWindow, QMessageBox, QProgressDialog,
-    QPushButton, QSplitter, QTableWidget, QTableWidgetItem, QTextBrowser,
-    QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
+    QHeaderView, QLabel, QLineEdit, QListWidget, QMainWindow, QMessageBox,
+    QProgressDialog, QPushButton, QSplitter, QTableWidget, QTableWidgetItem,
+    QTextBrowser, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
 import cleaner
@@ -24,6 +29,45 @@ import theme
 
 RISK_LABEL = {"clean": "", "has-related": "есть хвосты",
               "shared-data": "⚠ общие данные", "orphan": "сирота"}
+
+
+def make_app_icon(size=256):
+    """Иконка в стиле Bloom: тёплая бумага, два блума, терракотовая капа «V3»."""
+    pm = QPixmap(size, size)
+    pm.fill(Qt.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.Antialiasing)
+    s = float(size)
+    p.setPen(Qt.NoPen)
+    p.setBrush(QColor(theme.PAPER))
+    p.drawRoundedRect(0, 0, s, s, s * 0.22, s * 0.22)
+    for cx, cy, col, a in ((0.88, 0.10, (175, 69, 41), 45),
+                           (0.10, 0.92, (201, 88, 63), 35)):
+        g = QRadialGradient(s * cx, s * cy, s * 0.75)
+        g.setColorAt(0.0, QColor(*col, a))
+        g.setColorAt(1.0, QColor(*col, 0))
+        p.setBrush(QBrush(g))
+        p.drawRect(0, 0, s, s)
+    g = QRadialGradient(s * 0.40, s * 0.35, s * 0.75)
+    g.setColorAt(0.0, QColor(theme.RUBBER_HI))
+    g.setColorAt(0.55, QColor(theme.RUBBER))
+    g.setColorAt(1.0, QColor(theme.RUBBER_LO))
+    p.setBrush(QBrush(g))
+    p.drawEllipse(QPointF(s * 0.5, s * 0.52), s * 0.31, s * 0.31)
+    p.setPen(QColor("#FFF6EF"))
+    f = QFont()
+    f.setBold(True)
+    f.setPixelSize(int(s * 0.30))
+    p.setFont(f)
+    p.drawText(QRectF(0, s * 0.30, s, s * 0.44), int(Qt.AlignCenter), "V3")
+    p.end()
+    return QIcon(pm)
+
+
+def save_app_ico(path):
+    img = make_app_icon(256).pixmap(256, 256).toImage()
+    w = QImageWriter(str(path), b"ico")
+    return w.write(img)
 
 
 def open_in_explorer(path):
@@ -318,6 +362,73 @@ class RestoreDialog(QDialog):
             self.changed_cb()
 
 
+class FoldersDialog(QDialog):
+    """Кастомные папки VST3: добавление/удаление, сохранение в settings.json."""
+
+    def __init__(self, parent=None, changed_cb=None):
+        super().__init__(parent)
+        self.setWindowTitle("Кастомные папки VST3")
+        self.resize(560, 380)
+        self.changed_cb = changed_cb
+        self._changed = False
+        v = QVBoxLayout(self)
+        note = QLabel("Эти папки сканируются вместе со стандартными "
+                      "(например, нестандартное место установки от инсталлятора).\n"
+                      "Пути сохраняются между запусками.")
+        note.setWordWrap(True)
+        note.setStyleSheet(f"color: {theme.MUTED};")
+        v.addWidget(note)
+        self.listw = QListWidget()
+        v.addWidget(self.listw)
+        h = QHBoxLayout()
+        b_add = QPushButton("Добавить папку…")
+        b_del = QPushButton("Удалить выбранную")
+        b_close = QPushButton("Закрыть")
+        b_del.setProperty("variant", "secondary")
+        b_close.setProperty("variant", "secondary")
+        h.addWidget(b_add)
+        h.addWidget(b_del)
+        h.addStretch(1)
+        h.addWidget(b_close)
+        v.addLayout(h)
+        b_add.clicked.connect(self.on_add)
+        b_del.clicked.connect(self.on_remove)
+        b_close.clicked.connect(self.accept)
+        self.reload()
+
+    def reload(self):
+        self.listw.clear()
+        for p in settings.custom_roots():
+            self.listw.addItem(p)
+
+    def on_add(self):
+        d = QFileDialog.getExistingDirectory(self, "Выбери папку с VST3")
+        if not d:
+            return
+        roots = settings.load_settings().get("custom_roots", [])
+        if d not in roots:
+            roots.append(d)
+            settings.save_settings({"custom_roots": roots})
+            self._changed = True
+            self.reload()
+
+    def on_remove(self):
+        row = self.listw.currentRow()
+        if row < 0:
+            return
+        path = self.listw.item(row).text()
+        roots = [p for p in settings.load_settings().get("custom_roots", [])
+                 if p != path]
+        settings.save_settings({"custom_roots": roots})
+        self._changed = True
+        self.reload()
+
+    def accept(self):
+        super().accept()
+        if self._changed and self.changed_cb:
+            self.changed_cb()
+
+
 # ------------------------------- главное окно -------------------------------
 
 class MainWindow(QMainWindow):
@@ -327,6 +438,7 @@ class MainWindow(QMainWindow):
         self.resize(1150, 720)
         self.report = None
         self.worker = None
+        self._updating_checks = False
 
         central = BloomCanvas()
         self.setCentralWidget(central)
@@ -337,16 +449,21 @@ class MainWindow(QMainWindow):
         top = QHBoxLayout()
         self.btn_scan = QPushButton("Пересканировать")
         self.btn_delete = QPushButton("Удалить выбранное")
-        self.btn_restore = QPushButton("Журнал / Восстановить…")
-        self.btn_export = QPushButton("Сохранить отчёт")
-        self.btn_admin = QPushButton("Перезапуск от админа")
+        self.btn_restore = QPushButton("Журнал")
+        self.btn_export = QPushButton("Отчёт")
+        self.btn_folders = QPushButton("Папки…")
+        self.btn_admin = QPushButton("От админа")
         self.btn_restore.setProperty("variant", "secondary")
         self.btn_export.setProperty("variant", "secondary")
+        self.btn_folders.setProperty("variant", "secondary")
         self.btn_admin.setProperty("variant", "secondary")
+        self.chk_tails = QCheckBox("только с хвостами")
         self.search = QLineEdit()
         self.search.setPlaceholderText("Поиск по имени или вендору…")
+        self.search.setMinimumWidth(220)
         for w in (self.btn_scan, self.btn_delete, self.btn_restore,
-                  self.btn_export, self.btn_admin, self.search):
+                  self.btn_folders, self.btn_export, self.btn_admin,
+                  self.chk_tails, self.search):
             top.addWidget(w)
         root.addLayout(top)
 
@@ -370,9 +487,12 @@ class MainWindow(QMainWindow):
         self.btn_delete.clicked.connect(self.on_delete)
         self.btn_restore.clicked.connect(self.on_restore)
         self.btn_export.clicked.connect(self.on_export)
+        self.btn_folders.clicked.connect(self.on_folders)
         self.btn_admin.clicked.connect(self.on_relaunch_admin)
         self.tree.itemSelectionChanged.connect(self.on_select)
         self.tree.itemDoubleClicked.connect(self.on_double_click)
+        self.tree.itemChanged.connect(self.on_item_changed)
+        self.chk_tails.toggled.connect(lambda _t: self.populate())
         self.search.textChanged.connect(lambda _t: self.populate())
 
         self.update_admin_label()
@@ -388,7 +508,7 @@ class MainWindow(QMainWindow):
             self.btn_admin.setVisible(False)
         else:
             self.admin_label.setText("⚠ Нет прав администратора: удаление из Program Files будет падать. "
-                                     "Нажми «Перезапуск от админа».")
+                                     "Нажми «От админа».")
             self.admin_label.setStyleSheet(f"color: {theme.LANE_2}; font-weight: 500;")
 
     def on_relaunch_admin(self):
@@ -448,51 +568,116 @@ class MainWindow(QMainWindow):
             f"Скан от {rep.get('generated', '')}")
 
     def populate(self):
+        self.tree.blockSignals(True)
         self.tree.clear()
-        if not self.report:
+        if self.report:
+            flt = self.search.text().strip().lower()
+            only_tails = self.chk_tails.isChecked()
+            groups = {}
+            for e in self.report["plugins"]:
+                if only_tails and e["risk"] not in ("has-related",
+                                                    "shared-data") \
+                        and not e.get("orphan"):
+                    continue
+                groups.setdefault(e["vendor"] or "(без вендора)", []).append(e)
+            orphans = self.report.get("orphans") or []
+            if orphans:
+                groups["(сироты — плагины уже удалены)"] = orphans
+            for vendor in sorted(groups, key=str.lower):
+                items = sorted(groups[vendor], key=lambda x: x["name"].lower())
+                if flt and flt not in vendor.lower() \
+                        and not any(flt in e["name"].lower() for e in items):
+                    continue
+                vnode = QTreeWidgetItem([vendor,
+                                         fmt_size(sum(e["size_bytes"]
+                                                      for e in items)),
+                                         f"{len(items)} шт."])
+                vnode.setTextAlignment(1, int(Qt.AlignRight | Qt.AlignVCenter))
+                f = vnode.font(0)
+                f.setBold(True)
+                vnode.setFont(0, f)
+                vnode.setFlags(vnode.flags() | Qt.ItemIsUserCheckable)
+                vnode.setCheckState(0, Qt.Unchecked)
+                vnode.setData(0, Qt.UserRole, {"kind": "vendor",
+                                               "plugins": items})
+                for e in items:
+                    label = RISK_LABEL.get(e["risk"], "")
+                    child = QTreeWidgetItem([e["name"], fmt_size(e["size_bytes"]),
+                                             label])
+                    child.setTextAlignment(1, int(Qt.AlignRight | Qt.AlignVCenter))
+                    if label:
+                        if e["risk"] == "shared-data":
+                            color = theme.LANE_2
+                        elif e["risk"] == "orphan":
+                            color = theme.MUTED
+                        else:
+                            color = theme.ACCENT
+                        child.setForeground(2, QBrush(QColor(color)))
+                    child.setFlags(child.flags() | Qt.ItemIsUserCheckable)
+                    child.setCheckState(0, Qt.Unchecked)
+                    child.setData(0, Qt.UserRole, {"kind": "plugin",
+                                                   "entry": e})
+                    # содержимое оболочек: информационные строки внутри
+                    for sp in e.get("shell_plugins") or []:
+                        g = QTreeWidgetItem([sp["name"], "", "внутри оболочки"])
+                        g.setForeground(2, QBrush(QColor(theme.MUTED)))
+                        g.setData(0, Qt.UserRole, {"kind": "inner"})
+                        child.addChild(g)
+                    vnode.addChild(child)
+                self.tree.addTopLevelItem(vnode)
+            self.tree.expandAll()
+        self.tree.blockSignals(False)
+        self.update_delete_btn()
+
+    # ----- мультивыбор чекбоксами -----
+
+    def on_item_changed(self, item, _col=0):
+        if self._updating_checks:
             return
-        flt = self.search.text().strip().lower()
-        groups = {}
-        for e in self.report["plugins"]:
-            groups.setdefault(e["vendor"] or "(без вендора)", []).append(e)
-        orphans = self.report.get("orphans") or []
-        if orphans:
-            groups["(сироты — плагины уже удалены)"] = orphans
-        for vendor in sorted(groups, key=str.lower):
-            items = sorted(groups[vendor], key=lambda x: x["name"].lower())
-            if flt and flt not in vendor.lower() \
-                    and not any(flt in e["name"].lower() for e in items):
-                continue
-            vnode = QTreeWidgetItem([vendor,
-                                     fmt_size(sum(e["size_bytes"] for e in items)),
-                                     f"{len(items)} шт."])
-            vnode.setTextAlignment(1, int(Qt.AlignRight | Qt.AlignVCenter))
-            f = vnode.font(0)
-            f.setBold(True)
-            vnode.setFont(0, f)
-            vnode.setData(0, Qt.UserRole, {"kind": "vendor", "plugins": items})
-            for e in items:
-                label = RISK_LABEL.get(e["risk"], "")
-                child = QTreeWidgetItem([e["name"], fmt_size(e["size_bytes"]), label])
-                child.setTextAlignment(1, int(Qt.AlignRight | Qt.AlignVCenter))
-                if label:
-                    if e["risk"] == "shared-data":
-                        color = theme.LANE_2
-                    elif e["risk"] == "orphan":
-                        color = theme.MUTED
+        self._updating_checks = True
+        try:
+            data = item.data(0, Qt.UserRole)
+            if data and data["kind"] == "vendor":
+                # вендор -> каскад на детей
+                state = item.checkState(0)
+                for i in range(item.childCount()):
+                    item.child(i).setCheckState(0, state)
+            else:
+                # ребёнок -> состояние вендора (вкл/полу/выкл)
+                parent = item.parent()
+                if parent:
+                    states = [parent.child(i).checkState(0)
+                              for i in range(parent.childCount())]
+                    if states and all(s == Qt.Checked for s in states):
+                        parent.setCheckState(0, Qt.Checked)
+                    elif any(s in (Qt.Checked, Qt.PartiallyChecked)
+                             for s in states):
+                        parent.setCheckState(0, Qt.PartiallyChecked)
                     else:
-                        color = theme.ACCENT
-                    child.setForeground(2, QBrush(QColor(color)))
-                child.setData(0, Qt.UserRole, {"kind": "plugin", "entry": e})
-                # содержимое оболочек: информационные строки внутри
-                for sp in e.get("shell_plugins") or []:
-                    g = QTreeWidgetItem([sp["name"], "", "внутри оболочки"])
-                    g.setForeground(2, QBrush(QColor(theme.MUTED)))
-                    g.setData(0, Qt.UserRole, {"kind": "inner"})
-                    child.addChild(g)
-                vnode.addChild(child)
-            self.tree.addTopLevelItem(vnode)
-        self.tree.expandAll()
+                        parent.setCheckState(0, Qt.Unchecked)
+        finally:
+            self._updating_checks = False
+        self.update_delete_btn()
+
+    def _checked_entries(self):
+        out = []
+        for i in range(self.tree.topLevelItemCount()):
+            v = self.tree.topLevelItem(i)
+            for j in range(v.childCount()):
+                c = v.child(j)
+                if c.checkState(0) == Qt.Checked:
+                    d = c.data(0, Qt.UserRole)
+                    if d and d["kind"] == "plugin":
+                        out.append(d["entry"])
+        return out
+
+    def update_delete_btn(self):
+        n = len(self._checked_entries())
+        self.btn_delete.setText(f"Удалить выбранное ({n})" if n
+                                else "Удалить выбранное")
+
+    def on_folders(self):
+        FoldersDialog(self, changed_cb=self.start_scan).exec()
 
     # ----- карточки -----
 
@@ -571,12 +756,16 @@ class MainWindow(QMainWindow):
     # ----- удаление и восстановление -----
 
     def on_delete(self):
-        item = self.tree.currentItem()
-        data = item.data(0, Qt.UserRole) if item else None
-        if not data:
-            return
-        entries = data["plugins"] if data["kind"] == "vendor" else [data["entry"]]
-        if not self.report["plugins"]:
+        # сперва чекбоксы, иначе — текущее выделение (вендор или плагин)
+        entries = self._checked_entries()
+        if not entries:
+            item = self.tree.currentItem()
+            data = item.data(0, Qt.UserRole) if item else None
+            if not data or data.get("kind") == "inner":
+                return
+            entries = data["plugins"] if data["kind"] == "vendor" \
+                else [data["entry"]]
+        if not entries:
             return
         daw_info = daw.mentions(entries)
         dlg = DeleteDialog(entries, self.report, daw_info, self)

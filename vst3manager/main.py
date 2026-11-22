@@ -98,6 +98,14 @@ def main():
     app = QApplication(sys.argv)
     app.setApplicationName("VST3 Manager")
     app.setStyleSheet(theme.APP_QSS)
+    icon = ui.make_app_icon()
+    app.setWindowIcon(icon)
+    ico_path = Path(__file__).resolve().parent / "app_icon.ico"
+    if not ico_path.exists():
+        try:
+            ui.save_app_ico(ico_path)  # для PyInstaller --icon
+        except Exception:
+            pass
     w = ui.MainWindow()
     w.show()
     return app.exec()
