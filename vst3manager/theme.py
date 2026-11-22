@@ -134,7 +134,21 @@ QCheckBox::indicator {{
 QCheckBox::indicator:hover {{ border-color: {ACCENT}; }}
 QCheckBox::indicator:checked {{ background: {ACCENT}; border-color: {ACCENT}; }}
 
-QSplitter::handle {{ background: transparent; width: 12px; }}
+/* — разделитель панелей: мягкая вертикальная линия, при наведении терракота — */
+QSplitter::handle {{
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+        stop:0 rgba(34, 21, 16, 0),
+        stop:0.5 rgba(34, 21, 16, 0.18),
+        stop:1 rgba(34, 21, 16, 0));
+    width: 14px;
+    margin: 6px 2px;
+}}
+QSplitter::handle:horizontal:hover {{
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+        stop:0 rgba(175, 69, 41, 0),
+        stop:0.5 rgba(175, 69, 41, 0.45),
+        stop:1 rgba(175, 69, 41, 0));
+}}
 
 QStatusBar {{
     background: {PAPER_2}; color: {MUTED};

@@ -79,7 +79,7 @@ def screenshot():
 
     def grab():
         w.grab().save(str(Path(__file__).with_name("preview.png")))
-        app.quit()
+        os._exit(0)  # teardown Qt даёт сегфолт — выходим жёстко после сохранения
 
     QTimer.singleShot(1500, grab)
     return app.exec()
