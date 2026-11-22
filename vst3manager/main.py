@@ -95,6 +95,10 @@ def main():
         return 1
     import theme
     import ui
+    # всегда запускаемся от админа: без прав пробуем перезапуститься через UAC;
+    # если пользователь отклонил — продолжаем обычный запуск с жёлтым баннером
+    if not ui.is_admin() and ui.relaunch_as_admin():
+        return 0
     app = QApplication(sys.argv)
     app.setApplicationName("VST3 Manager")
     app.setStyleSheet(theme.APP_QSS)

@@ -99,15 +99,18 @@ def is_admin():
 
 
 def relaunch_as_admin():
-    """Перезапуск с повышением прав (UAC). Работает и для собранного .exe."""
+    """Перезапуск с повышением прав (UAC). Работает и для собранного .exe.
+
+    Возвращает True только если UAC реально подтверждён (ShellExecute > 32)."""
     import ctypes
     if getattr(sys, "frozen", False):
         target, params = sys.executable, ""
     else:
         target, params = sys.executable, f'"{Path(sys.argv[0]).resolve()}"'
     try:
-        ctypes.windll.shell32.ShellExecuteW(None, "runas", target, params, None, 1)
-        return True
+        ret = ctypes.windll.shell32.ShellExecuteW(None, "runas", target,
+                                                  params, None, 1)
+        return int(ret) > 32
     except Exception:
         return False
 
@@ -481,6 +484,7 @@ class MainWindow(QMainWindow):
         split.addWidget(self.tree)
         split.addWidget(self.details)
         split.setSizes([650, 500])
+        split.setHandleWidth(14)  # реальный зазор между карточками (QSS width ненадёжен)
         root.addWidget(split, 1)
 
         self.btn_scan.clicked.connect(self.start_scan)
