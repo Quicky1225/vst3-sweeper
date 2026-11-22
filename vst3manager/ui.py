@@ -32,7 +32,7 @@ RISK_LABEL = {"clean": "", "has-related": "есть хвосты",
 
 
 def make_app_icon(size=256):
-    """Иконка в стиле Bloom: тёплая бумага, два блума, терракотовая капа «V3»."""
+    """Иконка Cobalt: бумага с точечной сеткой + кобальтовая клавиша «V3»."""
     pm = QPixmap(size, size)
     pm.fill(Qt.transparent)
     p = QPainter(pm)
@@ -40,26 +40,37 @@ def make_app_icon(size=256):
     s = float(size)
     p.setPen(Qt.NoPen)
     p.setBrush(QColor(theme.PAPER))
-    p.drawRoundedRect(0, 0, s, s, s * 0.22, s * 0.22)
-    for cx, cy, col, a in ((0.88, 0.10, (175, 69, 41), 45),
-                           (0.10, 0.92, (201, 88, 63), 35)):
-        g = QRadialGradient(s * cx, s * cy, s * 0.75)
-        g.setColorAt(0.0, QColor(*col, a))
-        g.setColorAt(1.0, QColor(*col, 0))
-        p.setBrush(QBrush(g))
-        p.drawRect(0, 0, s, s)
-    g = QRadialGradient(s * 0.40, s * 0.35, s * 0.75)
-    g.setColorAt(0.0, QColor(theme.RUBBER_HI))
-    g.setColorAt(0.55, QColor(theme.RUBBER))
-    g.setColorAt(1.0, QColor(theme.RUBBER_LO))
-    p.setBrush(QBrush(g))
-    p.drawEllipse(QPointF(s * 0.5, s * 0.52), s * 0.31, s * 0.31)
-    p.setPen(QColor("#FFF6EF"))
+    p.drawRoundedRect(0, 0, s, s, s * 0.18, s * 0.18)
+    # точечная сетка поля
+    dot_col = QColor(17, 24, 37, 22)
+    accent_col = QColor(4, 98, 211, 40)
+    step = s / 14
+    y = step / 2
+    row = 0
+    while y < s:
+        x = step / 2
+        col = 0
+        while x < s:
+            c = accent_col if (row % 3 == 0 and col % 6 == 3) else dot_col
+            p.setBrush(QColor(c))
+            p.drawEllipse(QPointF(x, y), s * 0.008, s * 0.008)
+            x += step
+            col += 1
+        y += step
+        row += 1
+    # кобальтовая клавиша с 3px нижней кромкой
+    kw, kh = s * 0.62, s * 0.46
+    kx, ky = (s - kw) / 2, (s - kh) / 2 - s * 0.02
+    p.setBrush(QColor(theme.ACCENT_EDGE))
+    p.drawRoundedRect(kx, ky + s * 0.035, kw, kh, s * 0.09, s * 0.09)
+    p.setBrush(QColor(theme.ACCENT))
+    p.drawRoundedRect(kx, ky, kw, kh - s * 0.035, s * 0.09, s * 0.09)
+    p.setPen(QColor(theme.ACCENT_INK))
     f = QFont()
     f.setBold(True)
-    f.setPixelSize(int(s * 0.30))
+    f.setPixelSize(int(kh * 0.52))
     p.setFont(f)
-    p.drawText(QRectF(0, s * 0.30, s, s * 0.44), int(Qt.AlignCenter), "V3")
+    p.drawText(QRectF(kx, ky, kw, kh - s * 0.035), int(Qt.AlignCenter), "V3")
     p.end()
     return QIcon(pm)
 
@@ -115,22 +126,33 @@ def relaunch_as_admin():
         return False
 
 
-class BloomCanvas(QWidget):
-    """Фон в стиле Bloom: тёплая бумага + два неподвижных световых «блума»
-    (акцент ~8% верх-справа, «резина» ~5% низ-слева). Блумы никогда не двигаются."""
+class CobaltCanvas(QWidget):
+    """Фон Cobalt: прохладная бумага + точечная сетка «поля» (fallback из спеки,
+    когда ASCII-поле недоступно). Статичная сетка, кобальтовые точки редки."""
 
     def paintEvent(self, event):
         p = QPainter(self)
         p.fillRect(self.rect(), QColor(theme.PAPER))
-        big = max(self.width(), self.height())
-        g1 = QRadialGradient(self.width() * 0.92, self.height() * 0.05, big * 0.55)
-        g1.setColorAt(0.0, QColor(175, 69, 41, 22))
-        g1.setColorAt(1.0, QColor(175, 69, 41, 0))
-        p.fillRect(self.rect(), QBrush(g1))
-        g2 = QRadialGradient(self.width() * 0.06, self.height() * 0.95, big * 0.50)
-        g2.setColorAt(0.0, QColor(201, 88, 63, 16))
-        g2.setColorAt(1.0, QColor(201, 88, 63, 0))
-        p.fillRect(self.rect(), QBrush(g2))
+        p.setRenderHint(QPainter.Antialiasing)
+        step = 22
+        dot = 1.4
+        ink_dot = QColor(17, 24, 37, 16)
+        accent_dot = QColor(4, 98, 211, 30)
+        y = step // 2
+        row = 0
+        while y < self.height():
+            x = step // 2
+            col = 0
+            while x < self.width():
+                # «трафик»: каждая 3-я линия, каждая 7-я клетка — кобальтовая
+                c = accent_dot if (row % 3 == 0 and col % 7 == 3) else ink_dot
+                p.setPen(Qt.NoPen)
+                p.setBrush(QColor(c))
+                p.drawEllipse(QPointF(x, y), dot, dot)
+                x += step
+                col += 1
+            y += step
+            row += 1
         p.end()
 
 
@@ -443,7 +465,7 @@ class MainWindow(QMainWindow):
         self.worker = None
         self._updating_checks = False
 
-        central = BloomCanvas()
+        central = CobaltCanvas()
         self.setCentralWidget(central)
         root = QVBoxLayout(central)
         root.setContentsMargins(16, 14, 16, 10)
@@ -707,16 +729,18 @@ class MainWindow(QMainWindow):
                 return empty
             return "<br>".join("• " + esc(p) for p in paths)
 
-        chips = {"clean": (theme.PAPER_3, theme.UMBER, "только бандл"),
-                 "has-related": (theme.ACCENT_WASH, theme.ACCENT, "есть хвосты"),
-                 "shared-data": (theme.ACCENT_WASH, theme.LANE_2,
-                                 "общие данные вендора"),
-                 "orphan": (theme.PAPER_3, theme.MUTED, "сирота")}
-        bg, fg, txt = chips.get(e["risk"], (theme.PAPER_3, theme.UMBER, ""))
+        # Cobalt: статус — текст + иконка, никогда не filled-chip
+        status = {"clean": ("·", theme.MUTED, "только бандл"),
+                  "has-related": ("•", theme.ACCENT, "есть хвосты"),
+                  "shared-data": ("⚠", theme.ACCENT_DEEP,
+                                  "общие данные вендора"),
+                  "orphan": ("×", theme.MUTED, "сирота")}
+        mark, fg, txt = status.get(e["risk"], ("·", theme.MUTED, ""))
         ver = e.get("version") or ""
         h = [f"<h2 style='color:{theme.INK}; margin-bottom:2px;'>{esc(e['name'])}</h2>",
              f"<p style='margin-top:2px;'>"
-             f"<span style='background-color:{bg}; color:{fg};'>&nbsp;{txt}&nbsp;</span>"
+             f"<span style='color:{fg};'>{mark}</span> "
+             f"<span style='color:{fg};'>{txt}</span>"
              + (f" &nbsp;<span style='color:{theme.MUTED}'>v{esc(ver)}</span>"
                 if ver else "") + "</p>",
              f"<p><b>Вендор:</b> {esc(e['vendor'] or '—')}</p>",
