@@ -42,6 +42,8 @@ DLL, кэши DAW) и удаляет плагины безопасно — с ZI
 
 ## Запуск
 
+Готовый exe — в [Releases](https://github.com/Quicky1225/vst3-sweeper/releases).
+
 Нужен Python 3.10+:
 
 ```bash
@@ -49,7 +51,9 @@ python -m pip install PySide6 send2trash pefile
 python vst3manager/main.py
 ```
 
-Для удаления из `Program Files` жми «Перезапуск от админа» в окне программы.
+При запуске программа **сама запрашивает права администратора** (UAC) — это
+нужно для удаления из `Program Files`. Если отклонить UAC, она запустится
+с ограничениями (жёлтый баннер, кнопка «От админа»).
 
 ## Сборка в .exe
 
